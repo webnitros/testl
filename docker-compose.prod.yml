@@ -1,0 +1,104 @@
+version: '3.9'
+services:
+  app:
+    image: cr.selcloud.ru/swarm/filament-app:latest
+    build:
+      dockerfile: ./docker/app/Dockerfile
+    volumes:
+      - 'sail-storage:/var/www/html/storage'
+    working_dir: /var/www/html
+    networks:
+      - sail
+    depends_on:
+      - mysql
+    user: 'www-data'
+    deploy:
+      replicas: 1
+      update_config:
+        parallelism: 2
+        delay: 15s
+        order: start-first
+  nginx:
+    image: cr.selcloud.ru/swarm/filament-nginx:latest
+    build:
+      dockerfile: ./docker/nginx/Dockerfile
+    depends_on:
+      - app
+    working_dir: /var/www/html
+    networks:
+      - traefik_traefik-public
+      - sail
+    deploy:
+      replicas: 1
+      update_config:
+        parallelism: 2 # обятельно 2 паралельных процесс
+        delay: 15s
+        order: start-first
+      labels:
+        - "traefik.enable=true"
+        - "traefik.docker.network=traefik_traefik-public"
+        - "traefik.http.routers.filament.entrypoints=websecure"
+        - "traefik.http.routers.filament.rule=(Host(`filament.example`) || Host(`www.filament.example`))"
+        - "traefik.http.routers.filament.tls.certresolver=letsencryptresolver"
+        - "traefik.http.services.filament.loadbalancer.server.port=80"
+  mysql:
+    image: 'mysql/mysql-server:8.0'
+    environment:
+      MYSQL_ROOT_PASSWORD: '${DB_PASSWORD}'
+      MYSQL_ROOT_HOST: "%"
+      MYSQL_DATABASE: '${DB_DATABASE}'
+      MYSQL_USER: '${DB_USERNAME}'
+      MYSQL_PASSWORD: '${DB_PASSWORD}'
+      MYSQL_ALLOW_EMPTY_PASSWORD: 1
+    volumes:
+      - 'sail-mysql:/var/lib/mysql'
+    networks:
+      - sail
+    labels:
+      - "minio.backup.plan=minio"
+      - "minio.backup.name=filament.example"
+    healthcheck:
+      test: [ "CMD", "mysqladmin", "ping", "-p${DB_PASSWORD}" ]
+      retries: 3
+      timeout: 5s
+  pma:
+    image: linuxserver/phpmyadmin:latest
+    links:
+      - mysql
+    environment:
+      - PMA_ABSOLUTE_URI=/phpmyadmin/
+      - PMA_HOST=mysql
+      - PHP_INI_SESSION.gc_maxlifetime=3600
+      - SESSION_TIMEOUT=86400
+      - UPLOAD_LIMIT=100M
+    depends_on:
+      - mysql
+    restart: always
+    deploy:
+      replicas: 1
+    networks:
+      - sail
+    volumes:
+      - sail-session:/var/lib/php/sessions
+  worker:
+    image: cr.selcloud.ru/swarm/filament-app:latest
+    command: [ "supervisord" ]
+    networks:
+      - sail
+    depends_on:
+      - app
+      - mysql
+    volumes:
+      - 'sail-storage:/var/www/html/storage'
+    environment:
+      PHP_POOL_NAME: "my-app_task"
+networks:
+  traefik_traefik-public:
+    external: true
+  sail:
+    external: false
+volumes:
+  sail-storage:
+  sail-session:
+  sail-cache:
+  sail-mysql:

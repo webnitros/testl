@@ -1,0 +1,12 @@
+.link-disabled {
+    text-decoration: line-through;
+    color: red;
+}
+
+.link-disabled td {
+    pointer-events: none;
+    cursor: default;
+    text-decoration: none;
+    opacity: 0.5;
+    color: red;
+}

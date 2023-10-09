@@ -1,0 +1,124 @@
+version: '3.9'
+services:
+  app:
+    build:
+      dockerfile: ./docker/app/Dockerfile
+      target: ${APP_BUILD_TARGET:-deploy}
+    environment:
+      ENV: 'local'
+      APP_ENV: '${TEAMCITY_APP_ENV:-local}'
+      APP_DEBUG: '${TEAMCITY_APP_DEBUG:-true}'
+      APP_URL: '/'
+    volumes:
+      - '.:/var/www/html'
+      - './docker/app/php.ini-production:/usr/local/etc/php/php.ini'
+    working_dir: /var/www/html
+    networks:
+      - sail
+    depends_on:
+      mysql:
+        condition: service_healthy
+    user: '82:82'
+  nginx:
+    build:
+      dockerfile: ./docker/nginx/Dockerfile
+      target: ${APP_BUILD_TARGET:-deploy}
+    volumes:
+      - './docker/nginx/templates:/etc/nginx/templates'
+      - './public:/var/www/html/public'
+    ports:
+      - ${PUB_NGINX_PORT:-8401}:80
+    depends_on:
+      - app
+      - mysql
+    working_dir: /var/www/html
+    networks:
+      - sail
+  mysql:
+    image: 'mysql/mysql-server:8.0'
+    ports:
+      - '${FORWARD_DB_PORT:-3306}:3306'
+    environment:
+      MYSQL_ROOT_PASSWORD: '${DB_PASSWORD}'
+      MYSQL_ROOT_HOST: "%"
+      MYSQL_DATABASE: '${DB_DATABASE}'
+      MYSQL_USER: '${DB_USERNAME}'
+      MYSQL_PASSWORD: '${DB_PASSWORD}'
+      MYSQL_ALLOW_EMPTY_PASSWORD: 1
+    volumes:
+      - 'sail-mysql:/var/lib/mysql'
+      - './docker/mysql/dumps:/docker-entrypoint-initdb.d'
+    networks:
+      - sail
+    healthcheck:
+      test: [ "CMD", "mysqladmin", "ping", "-p${DB_PASSWORD}" ]
+      retries: 24
+      interval: 5s
+      timeout: 120s
+  pma:
+    image: linuxserver/phpmyadmin:latest
+    links:
+      - mysql
+    environment:
+      - PMA_ABSOLUTE_URI=/phpmyadmin/
+      - PMA_HOST=mysql
+      - PHP_INI_SESSION.gc_maxlifetime=3600
+      - SESSION_TIMEOUT=86400
+      - UPLOAD_LIMIT=100M
+    depends_on:
+      - mysql
+    restart: always
+    networks:
+      - sail
+    volumes:
+      - sail-session:/var/lib/php/sessions
+  mailhog:
+    image: cd2team/mailhog:latest
+    logging:
+      driver: 'none'
+    networks:
+      - sail
+  worker:
+    build:
+      dockerfile: ./docker/app/Dockerfile
+      target: ${APP_BUILD_TARGET:-deploy}
+    command: [ "supervisord" ]
+    networks:
+      - sail
+    depends_on:
+      - app
+      - mysql
+    volumes:
+      - '.:/var/www/html'
+      - './docker/app/supervisor/supervisord.conf:/etc/supervisord.conf'
+    environment:
+      PHP_POOL_NAME: "my-app_task"
+      ENV: 'local'
+      APP_ENV: '${TEAMCITY_APP_ENV:-local}'
+      APP_DEBUG: '${TEAMCITY_APP_DEBUG:-true}'
+      APP_URL: '/'
+  minio:
+    image: 'minio/minio:latest'
+    ports:
+      - '${FORWARD_MINIO_PORT:-9001}:9000'
+      - '${FORWARD_MINIO_CONSOLE_PORT:-8900}:8900'
+    environment:
+      MINIO_ROOT_USER: '${MINIO_ROOT_USER-sail}'
+      MINIO_ROOT_PASSWORD: '${MINIO_ROOT_PASSWORD-password}'
+      MINIO_BROWSER_REDIRECT_URL: 'http://127.0.0.1:${PUB_NGINX_PORT:-8401}/minio/ui/'
+      MINIO_SERVER_URL: 'http://minio:9000'
+    volumes:
+      - 'sail-minio:/data/minio'
+    networks:
+      - sail
+    command: minio server /data/minio --console-address ":8900"
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
+      retries: 3
+      timeout: 5s
+networks:
+  sail:
+volumes:
+  sail-session:
+  sail-mysql:
+  sail-minio:
